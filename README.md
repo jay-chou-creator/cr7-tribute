@@ -18,10 +18,11 @@ Then visit `http://localhost:8765`.
 ```text
 index.html          Semantic page skeleton (nav, hero, timeline, data, gallery, honors, bio, footer, modal)
 css/style.css       Design tokens, section styles, motion, responsive breakpoints, reduced-motion
-js/data.js          Content source of truth (eras, stats, moments, honors, biography)
+js/data.js          Content source of truth (eras, stats, moments, honors, biography) + LIVE_DATA config
 js/main.js          Rendering + interactions (observer reveals, tabs, filters, charts, modal, particles, parallax)
 assets/img/*.webp   Photos (Wikimedia Commons, CC-licensed; see assets/img/CREDITS.md)
 favicon.ico         Site icon
+cloud/              Cloudflare Worker proxy for live career stats (see cloud/cloudflare-worker/README.md)
 docs/               Design spec + implementation plan (superpowers workflow)
 ```
 
@@ -35,6 +36,8 @@ docs/               Design spec + implementation plan (superpowers workflow)
 - Gallery: masonry cards, competition/type filters, modal with full story and image attribution
 - Honors wall: 33 tiles with SVG line-art icons, glow animation, hover reveal
 - Biography: 3 chapters with scroll-fade paragraphs and gold key sentences
+- Live data: stat counters bound to a proxy endpoint with static-baseline fallback,
+  golden pulse on goal-count changes, replayable count animations, source/updated stamp
 - Footer: tribute quote, handwritten signature, progress-ring back-to-top
 
 ## Content & accuracy
@@ -42,6 +45,15 @@ docs/               Design spec + implementation plan (superpowers workflow)
 Stats are verified against public records as of August 2026 (977 official goals, 1,330 matches,
 261 assists; Portugal 146 goals / 228 caps; Saudi Pro League champion 2025-26; first man to score
 in six World Cups, etc.). A footnote on the page states the data cutoff.
+
+## Live data
+
+By default the page runs in static-baseline mode (GitHub Pages friendly, no keys, no CORS
+issues) with a visible "last updated" stamp. To enable live refresh, deploy the bundled
+Cloudflare Worker in `cloud/cloudflare-worker/` and point `LIVE_DATA.api` in `js/data.js`
+at it — the page then polls (5 min on match days, 1 h otherwise), animates number changes
+with a golden pulse, and degrades back to the baseline on any network failure.
+Full deployment steps: `cloud/cloudflare-worker/README.md`.
 
 ## Image credits
 

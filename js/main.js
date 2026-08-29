@@ -37,15 +37,18 @@ const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)
 
 /* ---------------- 通用：数字滚动 ---------------- */
 function animateCount(el, target, duration = 1400) {
-  if (prefersReducedMotion) { el.textContent = target.toLocaleString(); return; }
-  const start = performance.now();
-  function tick(now) {
-    const p = Math.min((now - start) / duration, 1);
-    const eased = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.round(target * eased).toLocaleString();
-    if (p < 1) requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
+  if (prefersReducedMotion) { el.textContent = target.toLocaleString(); return Promise.resolve(); }
+  return new Promise((resolve) => {
+    const start = performance.now();
+    function tick(now) {
+      const p = Math.min((now - start) / duration, 1);
+      const eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = Math.round(target * eased).toLocaleString();
+      if (p < 1) requestAnimationFrame(tick);
+      else resolve();
+    }
+    requestAnimationFrame(tick);
+  });
 }
 
 /* ---------------- 通用：视口观察 ---------------- */
@@ -56,7 +59,10 @@ const revealObserver = new IntersectionObserver((entries) => {
       const delay = el.dataset.delay ? parseInt(el.dataset.delay, 10) : 0;
       el.style.transitionDelay = delay + "ms";
       el.classList.add("is-in");
-      if (el.dataset.count) animateCount(el, parseInt(el.dataset.count, 10));
+      if (el.dataset.count) {
+        el.dataset.counted = "1";
+        animateCount(el, parseInt(el.dataset.count, 10));
+      }
       revealObserver.unobserve(el);
     }
   });
@@ -68,6 +74,116 @@ function observeReveals(root = document) {
   });
 }
 
+/* ---------------- 提示浮层（Toast） ---------------- */
+let toastTimer = 0;
+function showToast(msg) {
+  const toast = $("#toast");
+  if (!toast) return;
+  toast.textContent = msg;
+  toast.classList.add("is-visible");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2400);
+}
+
+/* ---------------- 实时数据模块（静态兜底 + 可选云函数代理） ----------------
+   GitHub Pages 纯静态站点无法安全携带密钥调用第三方 API；
+   页面默认展示经核对的静态基准数据，并显示「最后更新时间」。
+   若在 data.js 的 LIVE_DATA.api 配置自建中转接口，则自动切换为在线模式：
+   比赛日短轮询 / 非比赛日长轮询，数字变化时触发金色脉冲动画。 */
+const LiveData = {
+  values: Object.assign({}, LIVE_DATA.baseline),
+  mode: "static",
+
+  async init() {
+    this.renderMeta();
+    if (LIVE_DATA.api) {
+      await this.fetchRemote();
+      this.schedulePoll();
+    }
+    this.bindReplay();
+  },
+
+  renderMeta() {
+    const stamp = (this.mode === "live" && this.values.updatedAt) ? String(this.values.updatedAt).slice(0, 10) : LIVE_DATA.updatedAt;
+    $$("[data-live-updated]").forEach((el) => { el.textContent = stamp; });
+    $$("[data-live-source]").forEach((el) => { el.textContent = LIVE_DATA.source; });
+    $$("[data-live-mode]").forEach((el) => {
+      el.textContent = this.mode === "live" ? "在线数据" : "静态基准数据";
+      el.classList.toggle("is-live", this.mode === "live");
+    });
+    $$("[data-live-dot]").forEach((el) => {
+      el.classList.toggle("is-live", this.mode === "live");
+    });
+  },
+
+  async fetchRemote() {
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(LIVE_DATA.api, { signal: ctrl.signal, headers: { Accept: "application/json" } });
+      clearTimeout(timer);
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json();
+      const prev = this.values;
+      this.values = Object.assign({}, prev, data);
+      this.mode = "live";
+      this.renderMeta();
+      this.apply(true);
+      showToast("已同步最新官方数据");
+    } catch (err) {
+      this.mode = "static";
+      this.renderMeta();
+    }
+  },
+
+  schedulePoll() {
+    const delay = this.mode === "live" ? LIVE_DATA.pollActiveMatchMs : LIVE_DATA.pollIdleMs;
+    setTimeout(() => this.fetchRemote().then(() => this.schedulePoll()), delay);
+  },
+
+  /* 把当前值写入所有绑定元素；数据变化时给对应卡片加脉冲 */
+  apply(pulseChanged) {
+    $$("[data-live]").forEach((el) => {
+      const key = el.dataset.live;
+      const target = this.values[key];
+      if (typeof target !== "number") return;
+      const shown = parseInt((el.textContent || "0").replace(/[^\d]/g, ""), 10) || 0;
+      const counted = el.dataset.counted === "1";
+      if (!counted) { el.dataset.count = String(target); return; }
+      if (shown !== target) {
+        animateCount(el, target, 900);
+        if (pulseChanged && target > shown) {
+          const card = el.closest(".stat, .dcard");
+          if (card) {
+            card.classList.remove("pulse-gold");
+            void card.offsetWidth;
+            card.classList.add("pulse-gold");
+          }
+        }
+      }
+      el.dataset.count = String(target);
+    });
+    this.renderMeta();
+  },
+
+  bindReplay() {
+    const btn = $("#replayCounts");
+    if (!btn) return;
+    btn.addEventListener("click", () => {
+      $$("[data-count]").forEach((el) => {
+        el.dataset.counted = "1";
+        animateCount(el, parseInt(el.dataset.count, 10), 1200);
+      });
+      $$(".bar-fill").forEach((bar) => {
+        bar.style.height = "0";
+        void bar.offsetWidth;
+        bar.style.height = bar.style.getPropertyValue("--h");
+      });
+      showToast("已重播数据动画");
+    });
+  }
+};
+
 /* ---------------- 导航 ---------------- */
 const nav = $("#nav");
 const navToggle = $("#navToggle");
@@ -75,6 +191,7 @@ const navMenu = $("#navMenu");
 
 function updateNav() {
   nav.classList.toggle("scrolled", window.scrollY > 40);
+  nav.classList.toggle("shrunk", window.scrollY > 340);
 }
 
 navToggle.addEventListener("click", () => {
@@ -105,6 +222,22 @@ const sectionObserver = new IntersectionObserver((entries) => {
 }, { rootMargin: "-42% 0px -52% 0px" });
 $$("section[id]").forEach((s) => sectionObserver.observe(s));
 
+/* ---------------- 首屏加载动画 ---------------- */
+function initLoader() {
+  const loader = $("#loader");
+  if (!loader) return;
+  const dismiss = () => {
+    loader.classList.add("is-done");
+    document.body.classList.remove("is-loading");
+    setTimeout(() => loader.remove(), 700);
+  };
+  document.body.classList.add("is-loading");
+  if (prefersReducedMotion) { dismiss(); return; }
+  const timeout = setTimeout(dismiss, 2200);
+  window.addEventListener("load", () => { clearTimeout(timeout); setTimeout(dismiss, 350); });
+  setTimeout(dismiss, 4000); /* absolute safety net */
+}
+
 /* ---------------- 时间轴 ---------------- */
 const tlNodes = $("#tlNodes");
 const tlProgress = $("#tlProgress");
@@ -120,7 +253,7 @@ function renderTimeline() {
       </div>`;
     const stories = era.stories.map((s) => `<div class="tl-story"><h4>${s.h}</h4><p>${s.p}</p></div>`).join("");
     return `
-      <article class="tl-node reveal" data-era="${era.id}" style="--delay:${i * 60}ms">
+      <article class="tl-node reveal" data-era="${era.id}" style="--delay:${i * 60}ms; --era:${era.accent}">
         <span class="tl-dot" aria-hidden="true">${String(i + 1).padStart(2, "0")}</span>
         <div class="tl-card" role="button" tabindex="0" aria-expanded="false" aria-label="展开 ${era.club} 详情">
           <div class="tl-card-head">
@@ -128,10 +261,11 @@ function renderTimeline() {
               <span class="tl-years">${era.years}</span>
               <h3 class="tl-club">${era.club}</h3>
               <p class="tl-tagline">${era.tagline}</p>
+              <p class="tl-spirit">${era.spirit}</p>
             </div>
             <span class="tl-chevr">${chevron}</span>
           </div>
-          <div class="tl-media"><img src="${era.img}" alt="${era.club}时期" loading="lazy"></div>
+          <div class="tl-media"><img src="${era.img}" alt="${era.club}时期" loading="lazy" decoding="async"></div>
           <div class="tl-body"><div class="tl-body-inner">${stats}${stories}</div></div>
         </div>
       </article>`;
@@ -209,7 +343,7 @@ function renderDonut(containerId, data, totalElId) {
   $("#" + totalElId).textContent = total.toLocaleString();
   const legend = $("#clubLegend");
   if (legend) {
-    legend.innerHTML = data.map((d) => `<li><i style="background:${d.color}"></i>${d.label} <b style="margin-left:auto;color:var(--gold-light);font-family:var(--font-mono)">${d.value}%</b></li>`).join("");
+    legend.innerHTML = data.map((d) => `<li><i style="background:${d.color}"></i>${d.label} <b style="margin-left:auto;color:var(--gold-light);font-family:var(--font-mono)">${Math.round((d.value / total) * 100)}%</b></li>`).join("");
   }
 }
 
@@ -279,10 +413,11 @@ function renderGallery() {
                     (momentState.type === "all" || m.type === momentState.type);
     return `
       <button class="mcard ${visible ? "" : "is-hidden"}" data-id="${m.id}" style="animation-delay:${(i % 6) * 70}ms" aria-label="查看：${m.title}">
-        <span class="mcard-media"><img src="${m.img}" alt="${m.title}" loading="lazy"></span>
+        <span class="mcard-media"><img src="${m.img}" alt="${m.title}" loading="lazy" decoding="async"></span>
         <span class="mcard-caption">
           <span class="mcard-date">${m.date}</span>
           <span class="mcard-title">${m.title}</span>
+          <span class="mcard-emotion">${m.emotion}</span>
           <span class="mcard-tags">${momentTags(m)}</span>
         </span>
       </button>`;
@@ -312,6 +447,19 @@ function initMomentFilters() {
 const modal = $("#modal");
 let lastFocused = null;
 
+function shareContent(title, text) {
+  const url = window.location.href.split("#")[0] + "#moments";
+  if (navigator.share) {
+    navigator.share({ title: title, text: text, url: url }).catch(() => {});
+  } else if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(title + " — " + text + " " + url)
+      .then(() => showToast("链接已复制到剪贴板"))
+      .catch(() => showToast("复制失败，请手动复制地址栏链接"));
+  } else {
+    showToast("当前浏览器不支持分享，请复制地址栏链接");
+  }
+}
+
 function openModal(id) {
   const m = CR7.moments.find((x) => x.id === id);
   if (!m) return;
@@ -320,10 +468,15 @@ function openModal(id) {
   $("#modalImg").alt = m.title;
   $("#modalCaption").textContent = m.credit;
   $("#modalMeta").textContent = m.date + " · " + m.title;
+  $("#modalEmotion").textContent = "「 " + m.emotion + " 」";
   $("#modalTitle").textContent = m.title;
   $("#modalText").textContent = m.story;
   const source = CREDITS[m.id] || "https://commons.wikimedia.org";
   $("#modalSource").href = source;
+  const shareBtn = $("#modalShare");
+  if (shareBtn) {
+    shareBtn.onclick = () => shareContent("CR7 · " + m.title, m.emotion);
+  }
   modal.hidden = false;
   document.body.style.overflow = "hidden";
   $(".modal-close", modal).focus();
@@ -375,7 +528,7 @@ function renderBio() {
     <div class="bio-panel ${b.id === "growth" ? "is-active" : ""}" data-biopanel="${b.id}">
       <div class="bio-grid ${b.flip ? "is-flip" : ""}">
         <figure class="bio-media">
-          <img src="${b.img}" alt="${b.title}" loading="lazy">
+          <img src="${b.img}" alt="${b.title}" loading="lazy" decoding="async">
           <figcaption class="bio-media-cap">${b.cap}</figcaption>
         </figure>
         <div class="bio-prose">
@@ -439,7 +592,7 @@ function createParticles(canvas, count = 46) {
       const alpha = p.a * (0.55 + 0.45 * Math.sin(p.tw));
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(232, 206, 140, " + alpha.toFixed(3) + ")";
+      ctx.fillStyle = "rgba(227, 203, 142, " + alpha.toFixed(3) + ")";
       ctx.fill();
     });
     raf = requestAnimationFrame(frame);
@@ -490,8 +643,28 @@ if (!prefersReducedMotion) {
   });
 }
 
+/* ---------------- 分享本站 ---------------- */
+function initSiteShare() {
+  const btn = $("#siteShare");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    const title = "CR7 · 传奇永不谢幕";
+    const text = "生于大西洋孤岛，以执念对抗岁月——C罗致敬站，977 粒官方进球的史诗。";
+    if (navigator.share) {
+      navigator.share({ title: title, text: text, url: window.location.href }).catch(() => {});
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text + " " + window.location.href)
+        .then(() => showToast("链接已复制到剪贴板"))
+        .catch(() => showToast("复制失败，请手动复制地址栏链接"));
+    } else {
+      showToast("当前浏览器不支持分享，请复制地址栏链接");
+    }
+  });
+}
+
 /* ---------------- 初始化 ---------------- */
 function init() {
+  initLoader();
   renderTimeline();
   initDataBoard();
   renderGallery();
@@ -500,6 +673,8 @@ function init() {
   renderBio();
   initTabs();
   observeReveals();
+  LiveData.init();
+  initSiteShare();
   createParticles($("#heroFx"), 52);
   createParticles($("#dataFx"), 40);
   updateNav();

@@ -1,0 +1,16 @@
+name = "cr7-stats-proxy"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# Optional: restrict CORS to your GitHub Pages origin (recommended in production).
+# ALLOWED_ORIGIN = "https://jay-chou-creator.github.io"
+
+# Optional: URL of a JSON file you control (raw GitHub gist, R2/KV-backed endpoint, ...)
+# with the same shape as the API response below. When set, the worker serves it
+# instead of the embedded baseline, so you can push stat updates without redeploying.
+# STATS_JSON_URL = "https://gist.githubusercontent.com/<user>/<id>/raw/cr7-stats.json"
+
+[vars]
+# Uncomment and set after deploying with: npx wrangler deploy
+# ALLOWED_ORIGIN = "https://jay-chou-creator.github.io"
+# STATS_JSON_URL = ""
