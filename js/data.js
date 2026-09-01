@@ -6,33 +6,35 @@
 
 /* --------------------------------------------------------------------------
    LIVE DATA module configuration
-   - api: ""       -> static fallback mode (GitHub Pages friendly, no keys exposed)
-   - api: "https://cr7-stats-proxy.<your-subdomain>.workers.dev/api/cr7-stats"
-     -> the bundled Cloudflare Worker proxy in cloud/cloudflare-worker/
-        (deployment steps in that folder's README; keys stay server-side).
-        Expected JSON response:
-        { "goals": 977, "apps": 1330, "assists": 261, "trophies": 34,
-          "clubGoals": 831, "ntGoals": 146, "updatedAt": "2026-08-29T10:00:00Z" }
-   - The browser never touches the upstream provider, so no API key is exposed.
-   - In static mode the page shows the verified baseline below plus a visible
-     "last updated" stamp, as documented in the delivery notes.
+   - 方案：GitHub Actions 定时抓取 + 仓库内 JSON 数据文件
+     工作流：.github/workflows/update-stats.yml（每天 4 次自动更新）
+     抓取脚本：scripts/fetch-stats.py（数据源：ronaldostats.app）
+     数据文件：data/live-stats.json（同源 fetch，无 CORS 问题，无需 API 密钥）
+   - api: "data/live-stats.json" -> 在线实时模式，页面加载时自动 fetch 最新数据
+   - api: "" -> 静态兜底模式，仅展示下方 baseline 基准数据
+   - 预期 JSON 格式：
+     { "goals": 978, "apps": 1333, "assists": 291, "trophies": 34,
+       "clubGoals": 832, "clubApps": 1100, "ntGoals": 146, "ntApps": 233,
+       "updatedAt": "2026-08-28T00:00:00Z", "source": "..." }
+   - 数据变化时自动触发数字滚动动画 + 金色脉冲效果
+   - 比赛日 5 分钟轮询 / 非比赛日 1 小时轮询（页面保持打开时）
    -------------------------------------------------------------------------- */
 const LIVE_DATA = {
-  api: "",
+  api: "data/live-stats.json",
   pollActiveMatchMs: 5 * 60 * 1000,
   pollIdleMs: 60 * 60 * 1000,
   baseline: {
-    goals: 977,
-    apps: 1330,
-    assists: 261,
+    goals: 978,
+    apps: 1333,
+    assists: 291,
     trophies: 34,
-    clubGoals: 831,
-    clubApps: 1102,
+    clubGoals: 832,
+    clubApps: 1100,
     ntGoals: 146,
-    ntApps: 228
+    ntApps: 233
   },
-  updatedAt: "2026-08-29",
-  source: "FIFA / UEFA / 各成员协会官方正式赛事公开纪录"
+  updatedAt: "2026-08-28",
+  source: "ronaldostats.app · 人工逐场核对 · FIFA/UEFA/各成员协会官方正式赛事口径"
 };
 
 const CR7 = {
