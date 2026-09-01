@@ -65,3 +65,6 @@ labelled "资料图" (archival/illustrative).
 ## Browser support
 
 Modern evergreen browsers (Chrome, Edge, Firefox, Safari). `prefers-reduced-motion` is respected.
+
+## 实时数据功能
+本网站已集成 C 罗实时进球数据自动更新功能，数据来源 ronaldostats.app，通过 GitHub Actions 每日自动更新。
