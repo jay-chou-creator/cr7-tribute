@@ -1,12 +1,13 @@
 {
   "goals": 978,
-  "apps": 1333,
+  "apps": 1334,
   "assists": 291,
-  "trophies": 34,
+  "trophies": 35,
   "clubGoals": 832,
-  "clubApps": 1100,
+  "clubApps": 1101,
   "ntGoals": 146,
   "ntApps": 233,
-  "updatedAt": "2026-08-28T00:00:00Z",
+  "updatedAt": "2026-09-07T00:00:00Z",
+  "fetchedAt": "2026-09-07T11:10:02Z",
   "source": "ronaldostats.app · 人工逐场核对 · FIFA/UEFA/各成员协会官方正式赛事口径"
 }

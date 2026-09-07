@@ -6,34 +6,48 @@
 
 /* --------------------------------------------------------------------------
    LIVE DATA module configuration
-   - 方案：GitHub Actions 定时抓取 + 仓库内 JSON 数据文件
-     工作流：.github/workflows/update-stats.yml（每天 4 次自动更新）
-     抓取脚本：scripts/fetch-stats.py（数据源：ronaldostats.app）
-     数据文件：data/live-stats.json（同源 fetch，无 CORS 问题，无需 API 密钥）
-   - api: "data/live-stats.json" -> 在线实时模式，页面加载时自动 fetch 最新数据
-   - api: "" -> 静态兜底模式，仅展示下方 baseline 基准数据
-   - 预期 JSON 格式：
-     { "goals": 978, "apps": 1333, "assists": 291, "trophies": 34,
-       "clubGoals": 832, "clubApps": 1100, "ntGoals": 146, "ntApps": 233,
-       "updatedAt": "2026-08-28T00:00:00Z", "source": "..." }
-   - 数据变化时自动触发数字滚动动画 + 金色脉冲效果
-   - 比赛日 5 分钟轮询 / 非比赛日 1 小时轮询（页面保持打开时）
+   实时数据链路（2026-09 迁移到 Cloudflare 后）：
+
+     ronaldostats.app
+          │  Cloudflare Worker + Cron Triggers（每 6 小时）
+          ▼
+     Workers KV（键 latest）
+          │
+          ▼
+     /api/cr7-stats  ← Cloudflare Pages Function（同源，无 CORS）
+          │
+          ▼
+     浏览器 js/main.js
+
+   为什么不再依赖 GitHub Actions 定时：GitHub 会在仓库 60 天无活动后自动停用
+   schedule 事件，且抓取脚本一旦解析失败就会连续报错。现在主链路在 Cloudflare，
+   cron 不会被停用；GitHub Actions 降级为每日一次的兜底巡检，负责更新仓库里的
+   静态快照 data/live-stats.json。
+
+   三级回退（前端自动切换，任何一级挂掉都不会白屏）：
+     1. /api/cr7-stats          -> 在线实时模式（绿色 LIVE 指示灯）
+     2. data/live-stats.json    -> 静态快照模式
+     3. baseline（下方硬编码）   -> 离线基准模式
+
+   - endpoints: [] 表示只展示 baseline，不做任何网络请求
+   - 数字变化时自动触发滚动动画 + 金色脉冲
    -------------------------------------------------------------------------- */
 const LIVE_DATA = {
-  api: "data/live-stats.json",
+  endpoints: ["/api/cr7-stats", "data/live-stats.json"],
   pollActiveMatchMs: 5 * 60 * 1000,
   pollIdleMs: 60 * 60 * 1000,
+  timeoutMs: 8000,
   baseline: {
     goals: 978,
-    apps: 1333,
+    apps: 1334,
     assists: 291,
-    trophies: 34,
+    trophies: 35,
     clubGoals: 832,
-    clubApps: 1100,
+    clubApps: 1101,
     ntGoals: 146,
     ntApps: 233
   },
-  updatedAt: "2026-08-28",
+  updatedAt: "2026-09-07",
   source: "ronaldostats.app · 人工逐场核对 · FIFA/UEFA/各成员协会官方正式赛事口径"
 };
 
@@ -66,7 +80,7 @@ const CR7 = {
       tagline: "伯纳乌之王 · Real Madrid", img: "assets/img/era-madrid.webp",
       accent: "#C9CDD4",
       spirit: "背负天价期待，把重压化作一座座纪录。",
-      apps: 438, goals: 451, trophies: 16,
+      apps: 438, goals: 450, trophies: 16,
       stories: [
         { h: "9400 万欧元的豪赌", p: "2009 年他以 9400 万欧元天价加盟皇马，伯纳乌八万人欢迎仪式见证新王降临。2011-12 赛季，他单季 46 粒西甲进球率队夺回联赛冠军。" },
         { h: "欧冠三连与 451 球", p: "2013-14 赛季单季 17 球创欧冠纪录；2016-18 年率皇马完成欧冠三连。九年白衣生涯打进 451 球，成为皇马队史射手王，五座金球奖有四次在伯纳乌时期收入囊中。" }
@@ -99,10 +113,10 @@ const CR7 = {
       tagline: "沙漠远征 · Al-Nassr", img: "assets/img/era-alnassr.webp",
       accent: "#E2B33C",
       spirit: "跳出欧洲主流，续写属于自己的征途。",
-      apps: 108, goals: 129, trophies: 2,
+      apps: 152, goals: 131, trophies: 2,
       stories: [
         { h: "新的地平线", p: "2023 年 1 月加盟利雅得胜利。同年 8 月的阿拉伯俱乐部冠军杯决赛，他在第 92 分钟绝杀利雅得新月，为球队带来首冠。" },
-        { h: "沙特联赛冠军", p: "2025-26 赛季末轮，他梅开二度帮助球队 4-1 击败达马克，职业生涯首次夺得沙特职业联赛冠军，并将生涯进球推进至 973。如今他已突破 977 球，继续向 1000 球迈进。" }
+        { h: "沙特联赛冠军", p: "2025-26 赛季末轮，他梅开二度帮助球队 4-1 击败达马克，职业生涯首次夺得沙特职业联赛冠军，并将生涯进球推进至 973。如今他已打进 978 球，距 1000 球里程碑还差 22 球。" }
       ]
     },
     {
@@ -110,10 +124,10 @@ const CR7 = {
       tagline: "为国而生 · Portugal", img: "assets/img/era-portugal.webp",
       accent: "#B03A3E",
       spirit: "从落泪少年到国家英雄，背负一整个国家的期待。",
-      apps: 228, goals: 146, trophies: 2,
+      apps: 233, goals: 146, trophies: 3,
       stories: [
         { h: "从泪水到加冕", p: "2004 年本土欧洲杯决赛失利后他哭成泪人；2006 年世界杯四强；2016 年法兰西之夏，开场 25 分钟便因伤离场的他，在场边嘶吼指挥，带领葡萄牙首次登顶欧洲之巅；2019 年再夺欧国联冠军。" },
-        { h: "纪录收割机", p: "146 球、228 次出场，国家队双料历史第一；14 粒欧洲杯进球史无前例；2026 年世界杯，他成为史上首位在六届世界杯破门的球员——世界杯总进球 11 粒。" }
+        { h: "纪录收割机", p: "146 球、233 次出场，国家队双料历史第一；14 粒欧洲杯进球史无前例；2026 年世界杯，他成为史上首位在六届世界杯破门的球员——世界杯总进球 11 粒。" }
       ]
     }
   ],
@@ -123,21 +137,21 @@ const CR7 = {
       bars: [
         { label: "里斯本竞技", value: 5 },
         { label: "曼联（两期）", value: 145 },
-        { label: "皇家马德里", value: 451 },
+        { label: "皇家马德里", value: 450 },
         { label: "尤文图斯", value: 101 },
-        { label: "利雅得胜利", value: 129 }
+        { label: "利雅得胜利", value: 131 }
       ],
       donut: [
-        { label: "皇马", value: 451, color: "#C8A962" },
+        { label: "皇马", value: 450, color: "#C8A962" },
         { label: "曼联", value: 145, color: "#8F7B46" },
-        { label: "利雅得胜利", value: 129, color: "#5C6B3C" },
+        { label: "利雅得胜利", value: 131, color: "#5C6B3C" },
         { label: "尤文", value: 101, color: "#3A3F4A" },
         { label: "里斯本竞技", value: 5, color: "#2A2F38" }
       ],
       records: [
         { comp: "ucl", text: "欧冠历史射手王：140 球 / 183 场", tag: "历史第一" },
         { comp: "ucl", text: "单赛季欧冠进球纪录：17 球（2013-14）", tag: "历史第一" },
-        { comp: "laliga", text: "皇马队史射手王：451 球", tag: "队史第一" },
+        { comp: "laliga", text: "皇马队史射手王：450 球", tag: "队史第一" },
         { comp: "laliga", text: "西甲进球：311 球，历史第二", tag: "历史第二" },
         { comp: "epl", text: "英超进球：103 球（曼联）", tag: "俱乐部纪录" },
         { comp: "seriea", text: "意甲进球：81 球（尤文）", tag: "俱乐部纪录" },
@@ -153,7 +167,7 @@ const CR7 = {
       ],
       records: [
         { text: "国家队历史射手王：146 球", tag: "世界第一" },
-        { text: "国家队出场纪录：228 场", tag: "世界第一" },
+        { text: "国家队出场纪录：233 场", tag: "世界第一" },
         { text: "首位在六届世界杯破门的球员：11 球", tag: "历史第一" },
         { text: "首位参加六届欧洲杯的球员：14 球", tag: "历史第一" },
         { text: "2016 欧洲杯冠军 · 2019 欧国联冠军", tag: "双冠" },
@@ -275,7 +289,7 @@ const CR7 = {
       { name: "意甲冠军", count: 2, years: "2018-19 · 2019-20", detail: "尤文连续两季问鼎", kind: "shield" },
       { name: "沙特联赛冠军", count: 1, years: "2025-26", detail: "利雅得胜利末轮夺冠", kind: "shield" },
       { name: "欧洲杯冠军", count: 1, years: "2016", detail: "葡萄牙队史首冠", kind: "cup" },
-      { name: "欧国联冠军", count: 1, years: "2019", detail: "葡萄牙再添洲际荣誉", kind: "cup" },
+      { name: "欧国联冠军", count: 2, years: "2019 · 2025", detail: "葡萄牙队史两度登顶", kind: "cup" },
       { name: "世俱杯冠军", count: 4, years: "2008 · 2014 · 2016 · 2017", detail: "曼联 ×1 · 皇马 ×3", kind: "globe" },
       { name: "欧洲超级杯", count: 3, years: "2014 · 2016 · 2017", detail: "皇马三度捧杯", kind: "cup" },
       { name: "足总杯冠军", count: 1, years: "2003-04", detail: "曼联 3-0 米尔沃尔，19 岁头球", kind: "cup" },
@@ -300,7 +314,7 @@ const CR7 = {
       { name: "世俱杯金球奖", count: 1, years: "2016", detail: "决赛帽子戏法", kind: "medal" },
       { name: "欧冠历史射手王", count: 140, years: "183 场", detail: "历史第一，领先第二名 11 球", kind: "crown" },
       { name: "欧洲杯历史射手王", count: 14, years: "6 届", detail: "历史第一", kind: "crown" },
-      { name: "国家队历史射手王", count: 146, years: "228 场", detail: "世界第一", kind: "crown" },
+      { name: "国家队历史射手王", count: 146, years: "233 场", detail: "世界第一", kind: "crown" },
       { name: "首位 900 球先生", count: 900, years: "2024-09-05", detail: "足球史第一人，冲击 1000 球", kind: "crown" },
       { name: "六届世界杯破门", count: 6, years: "2006-2026", detail: "历史第一人", kind: "crown" },
       { name: "单赛季欧冠纪录", count: 17, years: "2013-14", detail: "历史第一", kind: "crown" }

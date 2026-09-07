@@ -1,16 +1,32 @@
-name = "cr7-stats-proxy"
+name = "cr7-tribute-stats"
 main = "src/worker.js"
-compatibility_date = "2025-01-01"
+compatibility_date = "2025-09-01"
 
-# Optional: restrict CORS to your GitHub Pages origin (recommended in production).
-# ALLOWED_ORIGIN = "https://jay-chou-creator.github.io"
+# 定时抓取：每 6 小时一次（UTC 00:00 / 06:00 / 12:00 / 18:00，即北京时间 08/14/20/02 点）
+# Cloudflare 的 Cron Triggers 不会像 GitHub Actions 那样因仓库无活动而被停用。
+[triggers]
+crons = ["0 0,6,12,18 * * *"]
 
-# Optional: URL of a JSON file you control (raw GitHub gist, R2/KV-backed endpoint, ...)
-# with the same shape as the API response below. When set, the worker serves it
-# instead of the embedded baseline, so you can push stat updates without redeploying.
-# STATS_JSON_URL = "https://gist.githubusercontent.com/<user>/<id>/raw/cr7-stats.json"
+# 抓取结果存放的 KV 命名空间。
+# 首次部署前先执行：npx wrangler kv namespace create STATS_KV
+# 把返回的 id 填到下面（预览环境可用 preview_id）。
+[[kv_namespaces]]
+binding = "STATS_KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[observability]
+enabled = true
 
 [vars]
-# Uncomment and set after deploying with: npx wrangler deploy
-# ALLOWED_ORIGIN = "https://jay-chou-creator.github.io"
-# STATS_JSON_URL = ""
+# 生产环境建议改成站点域名，避免被别的站点盗用接口
+ALLOWED_ORIGIN = "*"
+
+# 手动强制刷新用的口令，部署后用 npx wrangler secret put REFRESH_TOKEN 设置（不要写在这里）
+# REFRESH_TOKEN = ""
+
+[env.preview]
+name = "cr7-tribute-stats-preview"
+
+[[env.preview.kv_namespaces]]
+binding = "STATS_KV"
+id = "REPLACE_WITH_PREVIEW_KV_NAMESPACE_ID"

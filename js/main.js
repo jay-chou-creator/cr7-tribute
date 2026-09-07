@@ -85,30 +85,55 @@ function showToast(msg) {
   toastTimer = setTimeout(() => toast.classList.remove("is-visible"), 2400);
 }
 
-/* ---------------- 实时数据模块（静态兜底 + 可选云函数代理） ----------------
-   GitHub Pages 纯静态站点无法安全携带密钥调用第三方 API；
-   页面默认展示经核对的静态基准数据，并显示「最后更新时间」。
-   若在 data.js 的 LIVE_DATA.api 配置自建中转接口，则自动切换为在线模式：
-   比赛日短轮询 / 非比赛日长轮询，数字变化时触发金色脉冲动画。 */
+/* ---------------- 实时数据模块（三级回退 + 指数退避重试） ----------------
+   取数顺序（LIVE_DATA.endpoints 配置）：
+     1. /api/cr7-stats        → Cloudflare Pages Function / Worker，真实时数据
+     2. data/live-stats.json  → 仓库内静态快照（GitHub Actions 兜底巡检更新）
+     3. LIVE_DATA.baseline    → 硬编码基准，任何网络问题都不会白屏
+
+   稳定性设计：
+   - 单个端点失败自动降级到下一个，不会中断；
+   - 连续失败时指数退避（30s → 60s → 120s … 上限 30min），成功即重置；
+   - 标签页隐藏时暂停轮询，回到前台立即拉一次；
+   - 生涯累计数字只增不减，异常回跳的数据直接丢弃。 */
 const LiveData = {
   values: Object.assign({}, LIVE_DATA.baseline),
-  mode: "static",
+  mode: "static",           // live | snapshot | static
+  failures: 0,              // 连续失败次数，用于指数退避
+  pollTimer: null,
+  endpointIndex: 0,
+
+  MODE_LABEL: {
+    live: "在线数据",
+    snapshot: "静态快照",
+    static: "静态基准数据"
+  },
+
+  endpoints() {
+    if (Array.isArray(LIVE_DATA.endpoints) && LIVE_DATA.endpoints.length) {
+      return LIVE_DATA.endpoints;
+    }
+    return LIVE_DATA.api ? [LIVE_DATA.api] : [];
+  },
 
   async init() {
     this.renderMeta();
-    if (LIVE_DATA.api) {
-      await this.fetchRemote();
+    if (this.endpoints().length) {
+      await this.refresh({ toastOnFirst: true });
       this.schedulePoll();
     }
+    this.bindVisibility();
     this.bindReplay();
   },
 
   renderMeta() {
-    const stamp = (this.mode === "live" && this.values.updatedAt) ? String(this.values.updatedAt).slice(0, 10) : LIVE_DATA.updatedAt;
+    const stamp = (this.mode !== "static" && this.values.updatedAt)
+      ? String(this.values.updatedAt).slice(0, 10)
+      : LIVE_DATA.updatedAt;
     $$("[data-live-updated]").forEach((el) => { el.textContent = stamp; });
     $$("[data-live-source]").forEach((el) => { el.textContent = LIVE_DATA.source; });
     $$("[data-live-mode]").forEach((el) => {
-      el.textContent = this.mode === "live" ? "在线数据" : "静态基准数据";
+      el.textContent = this.MODE_LABEL[this.mode] || this.MODE_LABEL.static;
       el.classList.toggle("is-live", this.mode === "live");
     });
     $$("[data-live-dot]").forEach((el) => {
@@ -116,29 +141,109 @@ const LiveData = {
     });
   },
 
-  async fetchRemote() {
-    try {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 8000);
-      const res = await fetch(LIVE_DATA.api, { signal: ctrl.signal, headers: { Accept: "application/json" } });
-      clearTimeout(timer);
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      const data = await res.json();
-      const prev = this.values;
-      this.values = Object.assign({}, prev, data);
-      this.mode = "live";
-      this.renderMeta();
-      this.apply(true);
-      showToast("已同步最新官方数据");
-    } catch (err) {
-      this.mode = "static";
-      this.renderMeta();
+  /* 依次尝试每个端点，返回第一个可用的数据对象；全失败返回 null */
+  async tryEndpoints() {
+    const list = this.endpoints();
+    const cacheBust = Date.now();
+    for (let i = 0; i < list.length; i += 1) {
+      const url = list[i];
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), LIVE_DATA.timeoutMs || 8000);
+        const sep = url.includes("?") ? "&" : "?";
+        const res = await fetch(`${url}${sep}_=${cacheBust}`, {
+          signal: ctrl.signal,
+          headers: { Accept: "application/json" },
+          cache: "no-store"
+        });
+        clearTimeout(timer);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const data = await res.json();
+        if (!data || typeof data !== "object") throw new Error("响应不是 JSON 对象");
+        this.endpointIndex = i;
+        return { data, mode: i === 0 ? "live" : "snapshot" };
+      } catch (err) {
+        /* 继续下一个端点 */
+      }
     }
+    return null;
+  },
+
+  /* 生涯累计量不应倒退，异常数据直接丢弃 */
+  isSane(data) {
+    const monotonic = ["goals", "apps", "assists", "clubGoals", "clubApps", "ntGoals", "ntApps"];
+    for (const key of monotonic) {
+      const next = data[key];
+      if (typeof next !== "number" || !isFinite(next) || next < 0) return false;
+      const prev = this.values[key];
+      if (typeof prev === "number" && next < prev) return false;
+    }
+    if (typeof data.trophies === "number" && data.trophies < 0) return false;
+    return true;
+  },
+
+  async refresh(opts) {
+    const options = opts || {};
+    const result = await this.tryEndpoints();
+
+    if (!result) {
+      this.failures += 1;
+      this.mode = "static";
+      this.values = Object.assign({}, LIVE_DATA.baseline, {
+        updatedAt: LIVE_DATA.updatedAt
+      });
+      this.renderMeta();
+      return false;
+    }
+
+    if (!this.isSane(result.data)) {
+      this.failures += 1;
+      this.renderMeta();
+      return false;
+    }
+
+    const prev = this.values;
+    const changed = ["goals", "apps", "assists", "trophies",
+      "clubGoals", "clubApps", "ntGoals", "ntApps"]
+      .some((k) => typeof result.data[k] === "number" && result.data[k] !== prev[k]);
+
+    const wasLive = this.mode === "live";
+    this.values = Object.assign({}, prev, result.data);
+    this.mode = result.mode;
+    this.failures = 0;
+    this.renderMeta();
+    this.apply(true);
+
+    if (changed && (options.toastOnFirst || wasLive || this.mode === "live")) {
+      showToast("已同步最新官方数据");
+    }
+    return true;
   },
 
   schedulePoll() {
-    const delay = this.mode === "live" ? LIVE_DATA.pollActiveMatchMs : LIVE_DATA.pollIdleMs;
-    setTimeout(() => this.fetchRemote().then(() => this.schedulePoll()), delay);
+    clearTimeout(this.pollTimer);
+    const base = this.mode === "live" ? LIVE_DATA.pollActiveMatchMs : LIVE_DATA.pollIdleMs;
+    /* 连续失败时指数退避，最长 30 分钟 */
+    const backoff = this.failures > 0
+      ? Math.min(base * Math.pow(2, this.failures), 30 * 60 * 1000)
+      : base;
+    this.pollTimer = setTimeout(async () => {
+      await this.refresh();
+      this.schedulePoll();
+    }, backoff);
+  },
+
+  /* 标签页隐藏时暂停轮询，回到前台立即刷新 */
+  bindVisibility() {
+    if (!document.addEventListener) return;
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        clearTimeout(this.pollTimer);
+      } else {
+        this.refresh();
+        this.schedulePoll();
+      }
+    });
   },
 
   /* 把当前值写入所有绑定元素；数据变化时给对应卡片加脉冲 */

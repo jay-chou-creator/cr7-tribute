@@ -1,127 +1,164 @@
 /* ==========================================================================
-   CR7 Tribute - Cloudflare Worker proxy for live career stats
+   CR7 Tribute - 实时数据 Worker（定时抓取 + KV 存储 + API 输出）
    --------------------------------------------------------------------------
-   Why a proxy?
-   The site is hosted on GitHub Pages (pure static). Calling a football data
-   API directly from the browser would leak API keys and hit CORS limits.
-   This worker keeps all credentials server-side and exposes one clean,
-   CORS-enabled endpoint that js/data.js (LIVE_DATA.api) can poll.
+   职责：
+     scheduled()  → 每 6 小时抓取 ronaldostats.app，校验后写入 Workers KV
+     fetch()      → /api/cr7-stats 读 KV 返回 JSON（同源 Pages Function 兜底用）
 
-   Response contract (what the frontend expects):
-   {
-     "goals": 977, "apps": 1330, "assists": 261, "trophies": 34,
-     "clubGoals": 831, "clubApps": 1102, "ntGoals": 146, "ntApps": 228,
-     "updatedAt": "2026-08-29",
-     "source": "baseline | remote-override"
-   }
+   为什么把定时抓取从 GitHub Actions 搬到这里：
+     GitHub 会在仓库连续 60 天无活动后自动停用 schedule 事件，且抓取脚本一旦
+     因数据源改版而解析失败，就会连续发邮件报错、数据却一直停在旧值。
+     Cloudflare Cron Triggers 不会被停用，抓取失败会保留上一次的好数据并写入
+     KV 的 lastError 键，可在 /api/cr7-stats/health 一眼看到。
 
-   Data resolution order:
-   1. env.STATS_JSON_URL - an owner-controlled JSON (raw gist / R2 / KV-backed
-      URL) with the same shape as above minus "source". Update that file after
-      every match; no redeploy needed.
-   2. Embedded BASELINE - the verified numbers below (must match js/data.js).
-
-   Upgrading to a real provider:
-   Store the provider key as a secret (npx wrangler secret put API_KEY) and
-   fetch/aggregate inside this worker - see the commented ADAPTER example at
-   the bottom. The browser never sees the key.
+   响应契约（前端 js/data.js 依赖）：
+     {
+       "goals": 978, "apps": 1334, "assists": 291, "trophies": 35,
+       "clubGoals": 832, "clubApps": 1101, "ntGoals": 146, "ntApps": 233,
+       "updatedAt": "2026-09-07", "fetchedAt": "...", "source": "..."
+     }
    ========================================================================== */
 "use strict";
 
-/* Must stay in sync with js/data.js (LIVE_DATA.baseline). */
-const BASELINE = {
-  goals: 977,
-  apps: 1330,
-  assists: 261,
-  trophies: 34,
-  clubGoals: 831,
-  clubApps: 1102,
-  ntGoals: 146,
-  ntApps: 228,
-  updatedAt: "2026-08-29"
-};
+import { parseStats, BASELINE, SOURCE_URL, NUMERIC_FIELDS } from "./parser.js";
 
-const NUMERIC_FIELDS = [
-  "goals", "apps", "assists", "trophies",
-  "clubGoals", "clubApps", "ntGoals", "ntApps"
-];
-const CACHE_TTL_SECONDS = 300; /* 5 minutes: match-day polling granularity */
+const KV_LATEST = "latest";
+const KV_LAST_ERROR = "lastError";
+const KV_LAST_RUN = "lastRun";
+const CACHE_TTL_SECONDS = 300;
 
 function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
-    "Access-Control-Allow-Headers": "Accept",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Accept, Content-Type, x-refresh-token",
     "Access-Control-Max-Age": "86400"
   };
 }
 
-/* Coerce + whitelist incoming JSON into the contract; drop anything invalid. */
-function normalize(raw, source) {
-  if (!raw || typeof raw !== "object") return null;
-  const out = { ...BASELINE };
-  let hasAny = false;
-  for (const key of NUMERIC_FIELDS) {
-    const value = Number(raw[key]);
-    if (Number.isFinite(value) && value >= 0) {
-      out[key] = Math.round(value);
-      hasAny = true;
-    }
-  }
-  if (typeof raw.updatedAt === "string" && raw.updatedAt.trim()) {
-    out.updatedAt = raw.updatedAt.trim().slice(0, 10);
-  }
-  if (!hasAny) return null;
-  return { ...out, source };
-}
-
-async function serveStats(env, ctx) {
-  /* caches.default exists only on Cloudflare's runtime; skip caching elsewhere. */
-  const cache = globalThis.caches && caches.default ? caches.default : null;
-  const cacheKey = cache ? new Request("https://cache.internal/cr7-stats", { method: "GET" }) : null;
-
-  let payload = null;
-  if (env.STATS_JSON_URL) {
-    const cached = cache ? await cache.match(cacheKey) : null;
-    if (cached) {
-      payload = await cached.json();
-    } else {
-      try {
-        const res = await fetch(env.STATS_JSON_URL, {
-          headers: { Accept: "application/json" },
-          cf: { cacheTtl: 60, cacheEverything: true }
-        });
-        if (!res.ok) throw new Error("override HTTP " + res.status);
-        const normalized = normalize(await res.json(), "remote-override");
-        if (normalized) {
-          payload = normalized;
-          if (cache) {
-            ctx.waitUntil(
-              cache.put(cacheKey, new Response(JSON.stringify(normalized), {
-                headers: { "Content-Type": "application/json", "Cache-Control": "max-age=" + CACHE_TTL_SECONDS }
-              }))
-            );
-          }
-        }
-      } catch (err) {
-        /* Override unreachable or malformed: degrade to baseline, never 5xx the site. */
-        payload = null;
-      }
-    }
-  }
-
-  if (!payload) payload = { ...BASELINE, source: "baseline" };
-
-  return new Response(JSON.stringify(payload), {
+function json(body, { status = 200, env = {}, headers = {} } = {}) {
+  return new Response(JSON.stringify(body), {
+    status,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=" + CACHE_TTL_SECONDS,
-      ...corsHeaders(env)
+      ...corsHeaders(env),
+      ...headers
     }
   });
 }
 
+async function readLatest(env) {
+  if (!env.STATS_KV) return null;
+  try {
+    const raw = await env.STATS_KV.get(KV_LATEST, { type: "json" });
+    return raw && typeof raw === "object" ? raw : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   核心：抓取 → 解析 → 校验 → 写入 KV
+   -------------------------------------------------------------------------- */
+async function scrapeAndStore(env, { force = false } = {}) {
+  const runAt = new Date().toISOString();
+  const previous = await readLatest(env);
+
+  const record = (ok, detail) => {
+    if (!env.STATS_KV) return;
+    const payload = JSON.stringify({ at: runAt, ok, detail });
+    env.STATS_KV.put(ok ? KV_LAST_RUN : KV_LAST_ERROR, payload).catch(() => {});
+    if (ok) env.STATS_KV.put(KV_LAST_ERROR, JSON.stringify({ at: runAt, ok: true, detail: null })).catch(() => {});
+  };
+
+  let html;
+  try {
+    const res = await fetch(SOURCE_URL, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (compatible; CR7-Tribute-LiveData/2.0; +https://github.com/jay-chou-creator/cr7-tribute)",
+        "Accept": "text/html,application/xhtml+xml",
+        "Accept-Language": "en-GB,en;q=0.9"
+      },
+      cf: { cacheTtl: 600 }
+    });
+    if (!res.ok) throw new Error("源站 HTTP " + res.status);
+    html = await res.text();
+  } catch (err) {
+    record(false, "抓取失败：" + err.message);
+    return { ok: false, error: "抓取失败：" + err.message };
+  }
+
+  const parsed = parseStats(html, previous, { force });
+  if (!parsed.ok) {
+    record(false, parsed.errors.join("; "));
+    return { ok: false, errors: parsed.errors, warnings: parsed.warnings };
+  }
+
+  const data = { ...parsed.data, fetchedAt: runAt };
+  const changed = !previous || NUMERIC_FIELDS.some((k) => previous[k] !== data[k]);
+
+  if (env.STATS_KV && changed) {
+    try {
+      await env.STATS_KV.put(KV_LATEST, JSON.stringify(data));
+    } catch (err) {
+      record(false, "KV 写入失败：" + err.message);
+      return { ok: false, error: "KV 写入失败：" + err.message };
+    }
+  }
+  record(true, changed ? "已更新" : "无变化");
+
+  return { ok: true, changed, data, warnings: parsed.warnings };
+}
+
+/* --------------------------------------------------------------------------
+   HTTP 入口
+   -------------------------------------------------------------------------- */
+async function serveStats(request, env, ctx) {
+  let payload = await readLatest(env);
+
+  /* KV 里还没有数据时，按需抓一次（避免首次部署后空窗 6 小时） */
+  if (!payload && env.STATS_KV) {
+    const result = await scrapeAndStore(env);
+    payload = result.data || null;
+  }
+
+  if (!payload) payload = { ...BASELINE, source: BASELINE.source + "（离线基准）" };
+
+  return json(payload, {
+    env,
+    headers: {
+      "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}, stale-while-revalidate=600`
+    }
+  });
+}
+
+async function serveHealth(env) {
+  let lastRun = null;
+  let lastError = null;
+  if (env.STATS_KV) {
+    try {
+      lastRun = await env.STATS_KV.get(KV_LAST_RUN, { type: "json" });
+      lastError = await env.STATS_KV.get(KV_LAST_ERROR, { type: "json" });
+    } catch (_) { /* 忽略 */ }
+  }
+  const latest = await readLatest(env);
+  return json({
+    service: "cr7-stats-worker",
+    hasKv: Boolean(env.STATS_KV),
+    hasData: Boolean(latest),
+    lastRun,
+    lastError,
+    latest
+  }, { env, headers: { "Cache-Control": "no-store" } });
+}
+
 export default {
+  /* Cron Triggers：在 wrangler.toml 的 [triggers].crons 里配置 */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(scrapeAndStore(env));
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
@@ -129,45 +166,38 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(env) });
     }
 
-    if (request.method === "GET" && (url.pathname === "/api/cr7-stats" || url.pathname === "/api/cr7-stats/")) {
-      return serveStats(env, ctx);
+    if (url.pathname === "/api/cr7-stats" || url.pathname === "/api/cr7-stats/") {
+      if (request.method === "POST") {
+        /* 手动强制刷新：比赛日想立刻同步时调用，需要 REFRESH_TOKEN */
+        const token =
+          request.headers.get("x-refresh-token") ||
+          url.searchParams.get("token") ||
+          "";
+        if (!env.REFRESH_TOKEN || token !== env.REFRESH_TOKEN) {
+          return json({ error: "unauthorized" }, { status: 401, env });
+        }
+        const result = await scrapeAndStore(env, { force: true });
+        return json(result, {
+          status: result.ok ? 200 : 502,
+          env,
+          headers: { "Cache-Control": "no-store" }
+        });
+      }
+      return serveStats(request, env, ctx);
     }
 
-    if (request.method === "GET" && url.pathname === "/") {
-      return new Response(JSON.stringify({
-        service: "cr7-stats-proxy",
-        endpoints: ["/api/cr7-stats"],
+    if (url.pathname === "/api/cr7-stats/health") {
+      return serveHealth(env);
+    }
+
+    if (url.pathname === "/") {
+      return json({
+        service: "cr7-stats-worker",
+        endpoints: ["/api/cr7-stats", "/api/cr7-stats/health"],
         cacheTtlSeconds: CACHE_TTL_SECONDS
-      }), {
-        headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(env) }
-      });
+      }, { env });
     }
 
-    return new Response(JSON.stringify({ error: "not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json; charset=utf-8", ...corsHeaders(env) }
-    });
+    return json({ error: "not found" }, { status: 404, env });
   }
 };
-
-/* --------------------------------------------------------------------------
-   ADAPTER EXAMPLE - plug in a keyed provider when you want automation.
-
-   1. npx wrangler secret put API_KEY
-   2. env.API_PROVIDER = "api-football" (vars in wrangler.toml)
-   3. In serveStats(), before falling back to BASELINE:
-
-   if (env.API_PROVIDER === "api-football" && env.API_KEY) {
-     // api-football v3: fixtures for a team on a given date, key stays here.
-     const res = await fetch(
-       "https://v3.football.api-sports.io/fixtures?team=<TEAM_ID>&season=<SEASON>",
-       { headers: { "x-apisports-key": env.API_KEY } }
-     );
-     // Aggregate the response into the contract, track a monotonically
-     // increasing career total in Workers KV, and normalize() before serving.
-   }
-
-   Career-cumulative totals are not exposed by most match APIs as a single
-   number, so the common pattern is: baseline (this file or STATS_JSON_URL)
-   + match-level delta detection after each game day.
-   -------------------------------------------------------------------------- */
