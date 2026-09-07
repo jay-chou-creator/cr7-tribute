@@ -1,0 +1,61 @@
+name: Deploy to Cloudflare
+
+# push 到 main 即自动上线 Cloudflare Pages，同时同步数据源 Worker。
+# 需要两个仓库 Secret：CLOUDFLARE_API_TOKEN、CLOUDFLARE_ACCOUNT_ID。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "index.html"
+      - "css/**"
+      - "js/**"
+      - "functions/**"
+      - "assets/**"
+      - "data/**"
+      - "cloud/**"
+      - "favicon.ico"
+      - ".github/workflows/deploy-cloudflare.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  pages:
+    name: 部署站点到 Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 上传并发布
+        run: npx --yes wrangler@4 pages deploy . --project-name cr7-tribute --branch main --commit-dirty=true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CI: "1"
+
+  worker:
+    name: 同步数据源 Worker
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 部署 Worker（含 Cron Triggers）
+        working-directory: cloud/cloudflare-worker
+        run: npx --yes wrangler@4 deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CI: "1"

@@ -27,6 +27,11 @@ const KV_LAST_ERROR = "lastError";
 const KV_LAST_RUN = "lastRun";
 const CACHE_TTL_SECONDS = 300;
 
+/* 正常情况下 cron 每 6 小时抓一次就够了，不需要更高的频率。
+   这个阈值只作为「cron 失灵时的安全网」：如果 KV 数据已经超过 7 小时没更新
+   （说明定时任务没跑成功），才在有人访问时后台补抓一次。 */
+const STALE_AFTER_MS = 7 * 60 * 60 * 1000;
+
 function corsHeaders(env) {
   return {
     "Access-Control-Allow-Origin": env.ALLOWED_ORIGIN || "*",
@@ -98,7 +103,9 @@ async function scrapeAndStore(env, { force = false } = {}) {
   const data = { ...parsed.data, fetchedAt: runAt };
   const changed = !previous || NUMERIC_FIELDS.some((k) => previous[k] !== data[k]);
 
-  if (env.STATS_KV && changed) {
+  /* 无论数据有没有变都要写：fetchedAt 表示「上次成功核对的时间」，
+     不更新的话每次请求都会判定为过期，白白重复抓取源站。 */
+  if (env.STATS_KV) {
     try {
       await env.STATS_KV.put(KV_LATEST, JSON.stringify(data));
     } catch (err) {
@@ -117,10 +124,11 @@ async function scrapeAndStore(env, { force = false } = {}) {
 async function serveStats(request, env, ctx) {
   let payload = await readLatest(env);
 
-  /* KV 里还没有数据时，按需抓一次（避免首次部署后空窗 6 小时） */
+  /* 只在 KV 还是空的时候（刚部署 / 首次访问）才当场抓一次，
+     避免首次部署后空窗一整个 cron 周期。平时完全交给 cron，不做额外抓取。 */
   if (!payload && env.STATS_KV) {
     const result = await scrapeAndStore(env);
-    payload = result.data || null;
+    payload = result.data || payload;
   }
 
   if (!payload) payload = { ...BASELINE, source: BASELINE.source + "（离线基准）" };
