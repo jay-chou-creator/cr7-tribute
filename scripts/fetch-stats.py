@@ -514,12 +514,9 @@ def main() -> int:
             fh.write("\n")
         log(f"[OK] 数据已更新并写入 {args.out}", quiet)
     else:
-        # 只刷新抓取时间，不改变展示内容
-        payload = dict(previous or {}, fetchedAt=payload["fetchedAt"])
-        with open(args.out, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, indent=2)
-            fh.write("\n")
-        log("[OK] 数据无变化", quiet)
+        # 数据没变化就完全不碰文件：否则 fetchedAt 每天变动会让 git diff 永远非空，
+        # 定时任务就会天天提交一次没有意义的空更新。
+        log("[OK] 数据无变化，保持原文件不动", quiet)
 
     github_output(changed)
     return 0

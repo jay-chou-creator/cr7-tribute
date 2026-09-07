@@ -10,6 +10,9 @@
    ========================================================================== */
 "use strict";
 
+const WORKER_STATS_URL =
+  "https://cr7-tribute-stats.2736784080.workers.dev/api/cr7-stats";
+
 const BASELINE = {
   goals: 978,
   apps: 1334,
@@ -44,6 +47,20 @@ async function fromKv(env) {
   }
 }
 
+async function fromWorker() {
+  try {
+    const res = await fetch(WORKER_STATS_URL, {
+      headers: { Accept: "application/json" },
+      cf: { cacheTtl: CACHE_TTL_SECONDS }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data && typeof data.goals === "number" ? data : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 async function fromStaticSnapshot(request) {
   try {
     const url = new URL("/data/live-stats.json", request.url);
@@ -68,6 +85,7 @@ export async function onRequestGet(context) {
 
   const payload =
     (await fromKv(env)) ||
+    (await fromWorker()) ||
     (await fromStaticSnapshot(request)) ||
     { ...BASELINE, stale: true };
 
