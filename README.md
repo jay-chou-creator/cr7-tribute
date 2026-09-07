@@ -3,6 +3,13 @@
 A single-page tribute website for Cristiano Ronaldo: motion-rich, interactive, fully responsive,
 and dependency-free (vanilla HTML / CSS / JS).
 
+## 线上地址
+
+- 站点：https://cr7-tribute.pages.dev
+- 数据接口：https://cr7-tribute.pages.dev/api/cr7-stats
+- 数据源 Worker：https://cr7-tribute-stats.2736784080.workers.dev
+  （`/api/cr7-stats` 取数、`/api/cr7-stats/health` 看最近一次抓取结果）
+
 ## Run
 
 No build step required. Either open `index.html` directly, or serve the folder locally:

@@ -66,8 +66,8 @@ npx wrangler deploy
 部署完成后验证：
 
 ```bash
-curl https://cr7-tribute-stats.<你的子域名>.workers.dev/api/cr7-stats
-curl https://cr7-tribute-stats.<你的子域名>.workers.dev/api/cr7-stats/health
+curl https://cr7-tribute-stats.2736784080.workers.dev/api/cr7-stats
+curl https://cr7-tribute-stats.2736784080.workers.dev/api/cr7-stats/health
 ```
 
 也可以在 Cloudflare 控制台手动运行一次：
@@ -113,7 +113,7 @@ curl https://cr7-tribute-stats.<你的子域名>.workers.dev/api/cr7-stats/healt
 ```js
 const LIVE_DATA = {
   endpoints: [
-    "https://cr7-tribute-stats.<你的子域名>.workers.dev/api/cr7-stats",
+    "https://cr7-tribute-stats.2736784080.workers.dev/api/cr7-stats",
     "data/live-stats.json"
   ],
   ...
